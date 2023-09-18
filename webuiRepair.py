@@ -33,6 +33,7 @@ if sys.platform == "darwin" and torch.backends.mps.is_available():
 else:
     device = "cuda"
 
+
 def get_text(text, language_str, hps):
     norm_text, phone, tone, word2ph = clean_text(text, language_str)
     phone, tone, language = cleaned_text_to_sequence(phone, tone, language_str)
@@ -67,7 +68,8 @@ def get_text(text, language_str, hps):
     language = torch.LongTensor(language)
     return bert, ja_bert, phone, tone, language
 
-def get_text_pinyin(text, language_str, hps, phoneOverride = None, toneOverride = None):
+
+def get_text_pinyin(text, language_str, hps, phoneOverride=None, toneOverride=None):
     norm_text, phone, tone, word2ph = clean_text(text, language_str)
     if phoneOverride is not None:
         phone = phoneOverride
@@ -104,6 +106,7 @@ def get_text_pinyin(text, language_str, hps, phoneOverride = None, toneOverride 
     language = torch.LongTensor(language)
     return bert, ja_bert, phone, tone, language
 
+
 def infer(text, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid, language):
     global net_g
     bert, ja_bert, phones, tones, lang_ids = get_text(text, language, hps)
@@ -137,14 +140,47 @@ def infer(text, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid, langua
         del x_tst, tones, lang_ids, bert, x_tst_lengths, speakers
         return audio
 
-def infer_pinyin_second(text, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid, language, merge_pinyin):
+
+def infer_pinyin_second(
+    text,
+    sdp_ratio,
+    noise_scale,
+    noise_scale_w,
+    length_scale,
+    sid,
+    language,
+    merge_pinyin,
+):
     phonesOverride, tonesOverride = split_phones_tones(merge_pinyin)
-    audio, merge_pinyin = infer_pinyin_first(text, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid, language, phonesOverride, tonesOverride)
+    audio, merge_pinyin = infer_pinyin_first(
+        text,
+        sdp_ratio,
+        noise_scale,
+        noise_scale_w,
+        length_scale,
+        sid,
+        language,
+        phonesOverride,
+        tonesOverride,
+    )
     return audio, merge_pinyin
 
-def infer_pinyin_first(text, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid, language, phonesOverride = None, tonesOverride = None):
+
+def infer_pinyin_first(
+    text,
+    sdp_ratio,
+    noise_scale,
+    noise_scale_w,
+    length_scale,
+    sid,
+    language,
+    phonesOverride=None,
+    tonesOverride=None,
+):
     global net_g
-    bert, ja_bert, phones, tones, lang_ids = get_text_pinyin(text, language, hps, phonesOverride, tonesOverride)
+    bert, ja_bert, phones, tones, lang_ids = get_text_pinyin(
+        text, language, hps, phonesOverride, tonesOverride
+    )
 
     # 清理出文字版的音素和声调
     _, phone_str_list, tone_int_list, _ = clean_text(text, language)
@@ -183,22 +219,25 @@ def infer_pinyin_first(text, sdp_ratio, noise_scale, noise_scale_w, length_scale
         del x_tst, tones, lang_ids, bert, x_tst_lengths, speakers
         return audio, merge_pinyin
 
+
 def merge_phones_tones(phones, tones):
     index = 0
     merge = []
-    while(index < len(phones)):
+    while index < len(phones):
         merge.append(phones[index] + str(tones[index]))
         index += 1
     return " ".join(merge)
+
 
 def split_phones_tones(merge_text):
     split = merge_text.split(" ")
     phones = []
     tones = []
     for phone_tone in split:
-            phones.append(phone_tone[0:-1]) #取出拼音部分
-            tones.append(int(phone_tone[-1:])) #取出声调部分
+        phones.append(phone_tone[0:-1])  # 取出拼音部分
+        tones.append(int(phone_tone[-1:]))  # 取出声调部分
     return phones, tones
+
 
 def tts_fn(
     text, speaker, sdp_ratio, noise_scale, noise_scale_w, length_scale, language
@@ -216,6 +255,7 @@ def tts_fn(
         torch.cuda.empty_cache()
     return "Success", (hps.data.sampling_rate, audio)
 
+
 def tts_fn_pinyin_first(
     text, speaker, sdp_ratio, noise_scale, noise_scale_w, length_scale, language
 ):
@@ -232,8 +272,16 @@ def tts_fn_pinyin_first(
         torch.cuda.empty_cache()
     return "Success with first!", (hps.data.sampling_rate, audio), pinyin
 
+
 def tts_fn_pinyin_second(
-    text, speaker, sdp_ratio, noise_scale, noise_scale_w, length_scale, language, merge_pinyin
+    text,
+    speaker,
+    sdp_ratio,
+    noise_scale,
+    noise_scale_w,
+    length_scale,
+    language,
+    merge_pinyin,
 ):
     with torch.no_grad():
         audio, merge_pinyin = infer_pinyin_second(
@@ -244,10 +292,11 @@ def tts_fn_pinyin_second(
             length_scale=length_scale,
             sid=speaker,
             language=language,
-            merge_pinyin=merge_pinyin
+            merge_pinyin=merge_pinyin,
         )
         torch.cuda.empty_cache()
     return "Success with second!", (hps.data.sampling_rate, audio), merge_pinyin
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -329,8 +378,12 @@ if __name__ == "__main__":
                     placeholder="Input pinyin here",
                     value="zh3 e3 li3 f4ang4 pin1 yin1",
                 )
-                btn2 = gr.Button("Generate with repaired pinyin no override!", variant="primary")
-                btn3 = gr.Button("Generate with repaired pinyin do override!", variant="primary")
+                btn2 = gr.Button(
+                    "Generate with repaired pinyin no override!", variant="primary"
+                )
+                btn3 = gr.Button(
+                    "Generate with repaired pinyin do override!", variant="primary"
+                )
             with gr.Column():
                 text_output = gr.Textbox(label="Message")
                 audio_output = gr.Audio(label="Output Audio")
@@ -365,7 +418,7 @@ if __name__ == "__main__":
 
         btn3.click(
             tts_fn_pinyin_second,
-            inputs = [
+            inputs=[
                 text,
                 speaker,
                 sdp_ratio,

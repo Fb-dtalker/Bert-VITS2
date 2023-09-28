@@ -155,7 +155,7 @@ class TransformerCouplingBlock(nn.Module):
                 x = flow(x, x_mask, g=g, reverse=reverse)
         return x
 
-
+# 音素的时长预测器
 class StochasticDurationPredictor(nn.Module):
     def __init__(
         self,
@@ -206,6 +206,8 @@ class StochasticDurationPredictor(nn.Module):
             self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
 
     def forward(self, x, x_mask, w=None, g=None, reverse=False, noise_scale=1.0):
+        # x:文本的隐条件，也就是TextEncoder编码后的结果
+        # 输出的是
         x = torch.detach(x)
         x = self.pre(x)
         if g is not None:
@@ -262,8 +264,8 @@ class StochasticDurationPredictor(nn.Module):
             )
             for flow in flows:
                 z = flow(z, x_mask, g=x, reverse=reverse)
-            z0, z1 = torch.split(z, [1, 1], 1)
-            logw = z0
+            z0, z1 = torch.split(z, [1, 1], 1) #弄出u, v的部分，其中v的部分因为是我们引入的舍弃掉
+            logw = z0 #这个就是预测出来的时长的离散分布，向上取整得到预测的时长
             return logw
 
 
@@ -333,13 +335,13 @@ class TextEncoder(nn.Module):
         self.kernel_size = kernel_size
         self.p_dropout = p_dropout
         self.gin_channels = gin_channels
-        self.emb = nn.Embedding(len(symbols), hidden_channels)
-        nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
-        self.tone_emb = nn.Embedding(num_tones, hidden_channels)
-        nn.init.normal_(self.tone_emb.weight, 0.0, hidden_channels**-0.5)
-        self.language_emb = nn.Embedding(num_languages, hidden_channels)
-        nn.init.normal_(self.language_emb.weight, 0.0, hidden_channels**-0.5)
-        self.bert_proj = nn.Conv1d(1024, hidden_channels, 1)
+        self.emb = nn.Embedding(len(symbols), hidden_channels) # 构建一个(全部语言的音素, hidden_channels)shape的词嵌入模型 (batchsize, 序列长度)->(batchsize, 序列长度, hidden_channels)
+        nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5) # 正则初始化词嵌入模型的权重
+        self.tone_emb = nn.Embedding(num_tones, hidden_channels) # 构建一个(全部声调, hidden_channel)shape的词嵌入模型
+        nn.init.normal_(self.tone_emb.weight, 0.0, hidden_channels**-0.5) # 正则初始化词嵌入模型的权重
+        self.language_emb = nn.Embedding(num_languages, hidden_channels) # 构建一个(全部语种, hidden_channels)shape的词嵌入模型
+        nn.init.normal_(self.language_emb.weight, 0.0, hidden_channels**-0.5) # 正则初始化
+        self.bert_proj = nn.Conv1d(1024, hidden_channels, 1) # (1024, 序列长度) 卷积hidden_channels个 (1024, 1) -> (hidden_channels, 序列长度)
         self.ja_bert_proj = nn.Conv1d(768, hidden_channels, 1)
 
         self.encoder = attentions.Encoder(
@@ -353,30 +355,44 @@ class TextEncoder(nn.Module):
         )
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
+    # 音素序列, 音素序列长度(shape是：[batchsize, 长度数值]), 声调序列, 语言序列, 中文bert结果, 日文bert结果, embedding词典表
     def forward(self, x, x_lengths, tone, language, bert, ja_bert, g=None):
-        bert_emb = self.bert_proj(bert).transpose(1, 2)
-        ja_bert_emb = self.ja_bert_proj(ja_bert).transpose(1, 2)
+        bert_emb = self.bert_proj(bert).transpose(1, 2) #(batchsize, 1024, 序列长度) -> (batchsize, hidden_channels, 序列长度) -> (batchsize, 序列长度, hidden_channels)
+        ja_bert_emb = self.ja_bert_proj(ja_bert).transpose(1, 2) #(batchsize, 768, 序列长度) -> (batchsize, hidden_channels, 序列长度) -> (batchsize, 序列长度, hidden_channels)
+        # x这里相当于融合了音素嵌入、声调嵌入、语言嵌入、bert中文预测、bert日文预测的结果
         x = (
-            self.emb(x)
-            + self.tone_emb(tone)
-            + self.language_emb(language)
-            + bert_emb
-            + ja_bert_emb
+            self.emb(x) # (batchsize, 序列长度, hidden_channels)
+            + self.tone_emb(tone) # (batchsize, 序列长度, hidden_channels)
+            + self.language_emb(language) # (batchsize, 序列长度, hidden_channels)
+            + bert_emb # (batchsize, 序列长度, hidden_channels)
+            + ja_bert_emb # (batchsize, 序列长度, hidden_channels)
         ) * math.sqrt(
-            self.hidden_channels
+            #embedding的常规操作，embedding是分布是N(0,1)，但是embedding matrix 初始化后的方差为1/embedding_size，
+            #所以乘上sqrt(embedding_size)能够时其分布回到N(0,1)，加速训练时的收敛
+            #https://zhuanlan.zhihu.com/p/442509602
+            self.hidden_channels 
         )  # [b, t, h]
-        x = torch.transpose(x, 1, -1)  # [b, h, t]
+        x = torch.transpose(x, 1, -1)  # [b, h, t] (batchsize, hidden_channels, 序列长度)
+        # 对x中x_lenghts超出max_lenght设置的长度的部分进行遮蔽，也就是说x_lenghts在设计上是可以小于实际x的长度的
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
             x.dtype
         )
 
-        x = self.encoder(x * x_mask, x_mask, g=g)
+        # https://www.bilibili.com/video/BV1x94y1r7WG/?p=61
+        # 多头注意力层
+        x = self.encoder(x * x_mask, x_mask, g=g) #输入(batchsize,192,序列长度)，返回(batchsize,192,序列长度)
+        # 将多头注意力层的结果进行mask后用1维卷积核拉通
         stats = self.proj(x) * x_mask
 
+        # 结果分为均值部分和log(方差)部分
         m, logs = torch.split(stats, self.out_channels, dim=1)
+        # h_text, 均值, 方差, mask
         return x, m, logs, x_mask
 
-
+# Flow模块，将音频采样出来的分布转换为文本采样出来的分布，或将文本采样出来的分布转为音频采样出来的分布
+# 支持前后两个方向的数据流动，一般而言：
+# 训练时 Flow(音频采样分布) -> 文本采样分布
+# 推理时 Flow(文本采样分布) -> 音频采样分布
 class ResidualCouplingBlock(nn.Module):
     def __init__(
         self,
@@ -421,7 +437,7 @@ class ResidualCouplingBlock(nn.Module):
                 x = flow(x, x_mask, g=g, reverse=reverse)
         return x
 
-
+#后验编码器，把音频编码成一个标准分布
 class PosteriorEncoder(nn.Module):
     def __init__(
         self,
@@ -442,7 +458,9 @@ class PosteriorEncoder(nn.Module):
         self.n_layers = n_layers
         self.gin_channels = gin_channels
 
+        #输入层，主要是为了调整层数和大小
         self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
+        #WavNet，对音频做特征提取
         self.enc = modules.WN(
             hidden_channels,
             kernel_size,
@@ -450,17 +468,24 @@ class PosteriorEncoder(nn.Module):
             n_layers,
             gin_channels=gin_channels,
         )
+        #输出层，主要也是为了调整输出大小
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, x, x_lengths, g=None):
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
             x.dtype
         )
+        #先把梅罗普数据进行拉通层一个(hidden_channels, 序列长度)的矩阵，然后进行mask
         x = self.pre(x) * x_mask
+        #用WavNet进行音频特征提取
         x = self.enc(x, x_mask, g=g)
+        #特征提取结果再次拉通，并且进行mask
         stats = self.proj(x) * x_mask
+        #将结果分层均值和Log(标准差)两部分
         m, logs = torch.split(stats, self.out_channels, dim=1)
+        #对结果进行采样，得到 均值+(均值标准差分布的随机数*标准差) ,再进行mask
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
+        #采样值, 均值, 标准差, mask
         return z, m, logs, x_mask
 
 
@@ -964,7 +989,13 @@ class SynthesizerTrn(nn.Module):
         logw = self.sdp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w) * (
             sdp_ratio
         ) + self.dp(x, x_mask, g=g) * (1 - sdp_ratio)
+        #exp(logw)就是得到了最终每个音素的长度，length_scale可以对音素进行整体的缩放
+        #那这样我们对其中一部分进行缩放就能够实现拖长声音的效果
         w = torch.exp(logw) * x_mask * length_scale
+        print(w)
+        w[0][0][3:4] *= 4
+        w[0][0][5:6] *= 4
+        print(w)
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(

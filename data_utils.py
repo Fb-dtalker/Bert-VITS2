@@ -20,7 +20,8 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     """
 
     def __init__(self, audiopaths_sid_text, hparams):
-        self.audiopaths_sid_text = load_filepaths_and_text(audiopaths_sid_text)
+        # 一行内容：音频路径, 说话人id, 语言, 文字内容, 音素, 声调, 音素数量
+        self.audiopaths_sid_text = load_filepaths_and_text(audiopaths_sid_text) #读取.cleaned文件每行并以|分割[[第一行分割],[第二行分割]...]
         self.max_wav_value = hparams.max_wav_value
         self.sampling_rate = hparams.sampling_rate
         self.filter_length = hparams.filter_length
@@ -62,6 +63,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             self.audiopaths_sid_text
         ):
             audiopath = f"{_id}"
+            # 音素数量过少或过多的排除
             if self.min_text_len <= len(phones) and len(phones) <= self.max_text_len:
                 phones = phones.split(" ")
                 tone = [int(i) for i in tone.split(" ")]
@@ -78,19 +80,22 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             + ", total: "
             + str(len(self.audiopaths_sid_text))
         )
+        # 更新筛选后的结果
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
 
     def get_audio_text_speaker_pair(self, audiopath_sid_text):
         # separate filename, speaker_id and text
+        # 音频路径, 说话人id, 语言, 文字内容, 音素, 声调, 音素数量
         audiopath, sid, language, text, phones, tone, word2ph = audiopath_sid_text
 
         bert, ja_bert, phones, tone, language = self.get_text(
             text, word2ph, phones, tone, language, audiopath
         )
 
-        spec, wav = self.get_audio(audiopath)
+        spec, wav = self.get_audio(audiopath) #获得音频 频域信号,时域信号
         sid = torch.LongTensor([int(self.spk_map[sid])])
+        # (音素, 频域音频, 时域音频, 说话人id, 声调, 语种id, 中文bert结果【shape:(768, 音素数量)】, 日语bert结果【shape:(1024, 音素数量)】)
         return (phones, spec, wav, sid, tone, language, bert, ja_bert)
 
     def get_audio(self, filename):
@@ -101,7 +106,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
                     filename, sampling_rate, self.sampling_rate
                 )
             )
-        audio_norm = audio / self.max_wav_value
+        audio_norm = audio / self.max_wav_value #归一化
         audio_norm = audio_norm.unsqueeze(0)
         spec_filename = filename.replace(".wav", ".spec.pt")
         if self.use_mel_spec_posterior:
@@ -135,9 +140,10 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         return spec, audio_norm
 
     def get_text(self, text, word2ph, phone, tone, language_str, wav_path):
+        #[音素的数字编号], [经过语种偏移的声调下标], [长度和音素数字编号列表一样的但是里面是语种的id]
         phone, tone, language = cleaned_text_to_sequence(phone, tone, language_str)
         if self.add_blank:
-            phone = commons.intersperse(phone, 0)
+            phone = commons.intersperse(phone, 0) #音素之间内插一个空白的0音素
             tone = commons.intersperse(tone, 0)
             language = commons.intersperse(language, 0)
             for i in range(len(word2ph)):
@@ -148,8 +154,8 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             bert = torch.load(bert_path)
             assert bert.shape[-1] == len(phone)
         except:
-            bert = get_bert(text, word2ph, language_str)
-            torch.save(bert, bert_path)
+            bert = get_bert(text, word2ph, language_str) #传入文字内容和每个字的音素数量列表 -> 得到
+            torch.save(bert, bert_path) #shape:(1024, 音素数量)
             assert bert.shape[-1] == len(phone), phone
 
         if language_str == "ZH":
@@ -165,15 +171,15 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             bert.shape,
             len(phone),
             sum(word2ph),
-            p1,
-            p2,
-            t1,
-            t2,
-            pold,
-            pold2,
+            # p1,
+            # p2,
+            # t1,
+            # t2,
+            # pold,
+            # pold2,
             word2ph,
             text,
-            w2pho,
+            # w2pho,
         )
         phone = torch.LongTensor(phone)
         tone = torch.LongTensor(tone)
@@ -185,6 +191,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         return sid
 
     def __getitem__(self, index):
+        # (音素, 频域音频, 时域音频, 说话人id, 声调, 语种id, 中文bert结果【shape:(768, 音素数量)】, 日语bert结果【shape:(1024, 音素数量)】)
         return self.get_audio_text_speaker_pair(self.audiopaths_sid_text[index])
 
     def __len__(self):

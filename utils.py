@@ -198,7 +198,7 @@ def get_hparams(init=True):
     parser.add_argument("-m", "--model", type=str, required=True, help="Model name")
 
     args = parser.parse_args()
-    model_dir = os.path.join("./logs", args.model)
+    model_dir = os.path.join("./logs", args.model) #./logs是训练的记录，里面放配置文件、训练的权重模型
 
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
@@ -206,7 +206,7 @@ def get_hparams(init=True):
     config_path = args.config
     config_save_path = os.path.join(model_dir, "config.json")
     if init:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             data = f.read()
         with open(config_save_path, "w") as f:
             f.write(data)

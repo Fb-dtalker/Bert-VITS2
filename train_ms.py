@@ -11,6 +11,9 @@ from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 import logging
 
+from transformers import logging as transformLogging
+transformLogging.set_verbosity_error()
+
 logging.getLogger("numba").setLevel(logging.WARNING)
 import commons
 import utils
@@ -50,7 +53,7 @@ def run():
     )  # Use torchrun instead of mp.spawn
     rank = dist.get_rank()
     n_gpus = dist.get_world_size()
-    hps = utils.get_hparams()
+    hps = utils.get_hparams() #配置参数的加载，对应的是configs/config.json里的内容
     torch.manual_seed(hps.train.seed)
     torch.cuda.set_device(rank)
     global global_step
@@ -60,6 +63,7 @@ def run():
         utils.check_git_hash(hps.model_dir)
         writer = SummaryWriter(log_dir=hps.model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
+    # 读取训练集内容并且切割掉成一行行以|分割后的结果
     train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data)
     train_sampler = DistributedBucketSampler(
         train_dataset,
@@ -69,7 +73,7 @@ def run():
         rank=rank,
         shuffle=True,
     )
-    collate_fn = TextAudioSpeakerCollate()
+    collate_fn = TextAudioSpeakerCollate() #用来对读取的内容进行padding的处理函数
     train_loader = DataLoader(
         train_dataset,
         num_workers=16,
@@ -106,7 +110,7 @@ def run():
         "use_duration_discriminator" in hps.model.keys()
         and hps.model.use_duration_discriminator is True
     ):
-        print("Using duration discriminator for VITS2")
+        print("Using duration discriminator for VITS2") #时间截断判别器
         net_dur_disc = DurationDiscriminator(
             hps.model.hidden_channels,
             hps.model.hidden_channels,
@@ -191,7 +195,6 @@ def run():
                 optim_g.param_groups[0]["initial_lr"] = g_resume_lr
             if not optim_d.param_groups[0].get("initial_lr"):
                 optim_d.param_groups[0]["initial_lr"] = d_resume_lr
-
         epoch_str = max(epoch_str, 1)
         global_step = (epoch_str - 1) * len(train_loader)
     except Exception as e:
@@ -207,6 +210,11 @@ def run():
     )
     if net_dur_disc is not None:
         if not optim_dur_disc.param_groups[0].get("initial_lr"):
+            try:
+                if dur_resume_lr not in vars():
+                    dur_resume_lr = 0.003
+            except:
+                dur_resume_lr = 0.003
             optim_dur_disc.param_groups[0]["initial_lr"] = dur_resume_lr
         scheduler_dur_disc = torch.optim.lr_scheduler.ExponentialLR(
             optim_dur_disc, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
@@ -265,6 +273,20 @@ def train_and_evaluate(
     net_d.train()
     if net_dur_disc is not None:
         net_dur_disc.train()
+
+    '''
+        text_padded,
+        text_lengths,
+        spec_padded,
+        spec_lengths,
+        wav_padded,
+        wav_lengths,
+        sid,
+        tone_padded,
+        language_padded,
+        bert_padded,
+        ja_bert_padded,
+    '''
     for batch_idx, (
         x,
         x_lengths,
@@ -300,6 +322,7 @@ def train_and_evaluate(
         ja_bert = ja_bert.cuda(rank, non_blocking=True)
 
         with autocast(enabled=hps.train.fp16_run):
+            #生成假数据
             (
                 y_hat,
                 l_length,
@@ -346,7 +369,7 @@ def train_and_evaluate(
                 y, ids_slice * hps.data.hop_length, hps.train.segment_size
             )  # slice
 
-            # Discriminator
+            # Discriminator 判别器训练，可以考虑多加一个情感的判别器，来控制情感
             y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
             with autocast(enabled=False):
                 loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
@@ -378,7 +401,7 @@ def train_and_evaluate(
         scaler.step(optim_d)
 
         with autocast(enabled=hps.train.fp16_run):
-            # Generator
+            # Generator 生成器训练，接下来添加修改生成器的输入内容
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
             if net_dur_disc is not None:
                 y_dur_hat_r, y_dur_hat_g = net_dur_disc(hidden_x, x_mask, logw, logw_)

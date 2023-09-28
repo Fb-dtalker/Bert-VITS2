@@ -380,7 +380,7 @@ class Flip(nn.Module):
         else:
             return x
 
-
+#把数据进行一个均值~标准差转换
 class ElementwiseAffine(nn.Module):
     def __init__(self, channels):
         super().__init__()
@@ -390,15 +390,18 @@ class ElementwiseAffine(nn.Module):
 
     def forward(self, x, x_mask, reverse=False, **kwargs):
         if not reverse:
+            # 训练时正向计算，计算结果是 y = 均值 + 对x进行标准差计算
             y = self.m + torch.exp(self.logs) * x
             y = y * x_mask
+            # 导数是对标准差进行求和
             logdet = torch.sum(self.logs * x_mask, [1, 2])
             return y, logdet
         else:
+            # 推理时反向计算，计算结果是从 y 进行反函数求得正向时的x
             x = (x - self.m) * torch.exp(-self.logs) * x_mask
             return x
 
-
+# Flow里面的具体层
 class ResidualCouplingLayer(nn.Module):
     def __init__(
         self,
@@ -435,24 +438,46 @@ class ResidualCouplingLayer(nn.Module):
         self.post.bias.data.zero_()
 
     def forward(self, x, x_mask, g=None, reverse=False):
+        # x (batchsize, channels, 序列长度)
+        # 把输入的数据分层两半，
+        # 前半作为skip直接往下传和学习均值x0(batchsize, :half_channels, 序列长度)，
+        # 后半用来学习方差x1(batchsize, half_channels:, 序列长度)
         x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
+        # 前一半丢进一维卷积拉通并变回(batchsize, channels, 序列长度)，再进行Mask
         h = self.pre(x0) * x_mask
+        # 用WavNet来提取信息
         h = self.enc(h, x_mask, g=g)
+        # 将WavNet提取的信息拉通，
+        # mean_only时：(batchsize, half_channels, 序列长度)
+        # not mean_only时：(batchsize, channels, 序列长度)
         stats = self.post(h) * x_mask
         if not self.mean_only:
+            # 不只需要均值时，将WavNet提取信息分为 均值,标准差 两个部分
+            # (batchsize, channels, 序列长度) -> m:(batchsize, :half_channels, 序列长度)，logs:(batchsize, half_channels:, 序列长度)
             m, logs = torch.split(stats, [self.half_channels] * 2, 1)
         else:
+            # 只需要均值时，标准差部分认为是0
             m = stats
             logs = torch.zeros_like(m)
 
         if not reverse:
+            # 正向计算：从音频采样结果分布算出字符的均值+log(标准差)分布，然后进行mask 
+            # =>> 得到的是从音频采样得到的分布转为 从文字采样得到的分布
+            # m:均值，x1:整体的分布，整体分布*方差=方差值 => x1 = 均值 + 方差值
             x1 = m + x1 * torch.exp(logs) * x_mask
+            # 拼接回来
             x = torch.cat([x0, x1], 1)
+            # 并且对标准差进行一个求和
             logdet = torch.sum(logs, [1, 2])
+            # x:从音频分布转换到的文字采样的分布算出音频的分布，然后进行mask
+            # logdet:对标准方差求和
             return x, logdet
         else:
+            # 反向计算：从文字的均值+log(标准差)转为音频的分布
             x1 = (x1 - m) * torch.exp(-logs) * x_mask
             x = torch.cat([x0, x1], 1)
+            # 反向计算：从文字提出的信息的分布经过WavNet算出音频的concatenate(均值,标准差)，即音频的分布
+            # 是正向计算的反过程
             return x
 
 
@@ -528,7 +553,7 @@ class TransformerCouplingLayer(nn.Module):
         filter_channels=0,
         mean_only=False,
         wn_sharing_parameter=None,
-        gin_channels=0,
+        gin_channels=0, #说话人信息
     ):
         assert channels % 2 == 0, "channels should be divisible by 2"
         super().__init__()

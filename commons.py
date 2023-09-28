@@ -20,7 +20,10 @@ def convert_pad_shape(pad_shape):
 
 
 def intersperse(lst, item):
+    #[0] * (len(lst)*2+1) -> [0,0,0...] 长度为len(lst)*2+1
     result = [item] * (len(lst) * 2 + 1)
+    #[0, 音素1, 0, 音素2, 0, 音素3...]，注意，音素1是 _0, 音素2才是真正的内容
+    #[_0, _0, _0, h3, _0, ao3, _0 ...] 转“好喜欢”应该是这样
     result[1::2] = lst
     return result
 
@@ -119,9 +122,15 @@ def shift_1d(x):
 
 
 def sequence_mask(length, max_length=None):
+    # length:(batchsize), max_length:1
     if max_length is None:
         max_length = length.max()
+    #产生一个[0,1,2,...,max_length-1]的向量
     x = torch.arange(max_length, dtype=length.dtype, device=length.device)
+    #x扩维到(1, max_length)， lenght扩充到(batchsize, 1)
+    #然后两边扩展到(batchsize, max_length)进行Bool比较
+    #把length中超出max_length的部分变成False
+    #eg:[[True, True, True, False, False]]，代表此时输入的length是[5], max_length是3
     return x.unsqueeze(0) < length.unsqueeze(1)
 
 

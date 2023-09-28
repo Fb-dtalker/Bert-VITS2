@@ -164,12 +164,12 @@ en_symbols = [
 num_en_tones = 4
 
 # combine all symbols
-normal_symbols = sorted(set(zh_symbols + ja_symbols + en_symbols))
-symbols = [pad] + normal_symbols + pu_symbols
-sil_phonemes_ids = [symbols.index(i) for i in pu_symbols]
+normal_symbols = sorted(set(zh_symbols + ja_symbols + en_symbols)) # 将所有类型的音素放到一个几何里进行排重
+symbols = [pad] + normal_symbols + pu_symbols #加上额外标记
+sil_phonemes_ids = [symbols.index(i) for i in pu_symbols] #构建一个音素->编号的映射关系
 
 # combine all tones
-num_tones = num_zh_tones + num_ja_tones + num_en_tones
+num_tones = num_zh_tones + num_ja_tones + num_en_tones #声调类型总数
 
 # language maps
 language_id_map = {"ZH": 0, "JP": 1, "EN": 2}
